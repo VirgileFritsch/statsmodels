@@ -216,7 +216,8 @@ class LTS(object):
 
 
     def fit_random(self, k_trimmed, max_nstarts=10, k_start=None, n_keep=30,
-                         max_nrefine_st1=1, max_nrefine_st2=100):
+                   max_nrefine_st1=1, max_nrefine_st2=100,
+                   two_steps=True, iterator=None):
         '''find k_trimmed outliers with a 2-stage random search
 
         Parameters
@@ -239,6 +240,10 @@ class LTS(object):
         max_nrefine_st2 : int
             maximum number of concentration or refinement steps in second stage.
             see Notes.
+        two_steps: bool,
+            If True, the standard two-steps algorithm is performed.
+            If False, the algorithm stops after stage 1 and report the
+            n_keep best results obtained so far.
 
         Returns
         -------
@@ -303,12 +308,13 @@ class LTS(object):
         k_accept = nobs - k_trimmed
 
         #stage 1
-        best_stage1 = []
-        ssr_keep = [np.inf] * n_keep
+        best_stage1 = np.zeros((n_keep, nobs), dtype=bool)
+        ssr_keep = np.inf * np.ones(n_keep)
         #need sorted list that allows inserting and deletes worst
         #use: add if it is better than n_keep-worst (i.e. min_keep)
 
-        iterator = subsample(nobs, k_start, max_nrep=max_nstarts)
+        if iterator is None:
+            iterator = subsample(nobs, k_start, max_nrep=max_nstarts)
 
         for ii in iterator:
             iin = ii.copy()   #TODO: do I still need a copy
@@ -317,28 +323,33 @@ class LTS(object):
             #if res_trimmed.ssr < ssr_keep[n_keep-1]:
                 #best_stage1.append((res_trimmed.ssr, ii2))
             if ssr_new < ssr_keep[n_keep-1]:
-                best_stage1.append((ssr_new, ii2))
-                #update minkeep, shouldn't grow longer than n_keep
-                #we don't drop extra indices in best_stage1
-                ssr_keep.append(ssr_new)
-                ssr_keep.sort()  #inplace python sort
-                del ssr_keep[n_keep:]   #remove extra
+                best_stage1[-1] = ii2
+                ssr_keep[-1] = ssr_new
+                sort_aux = np.argsort(ssr_keep)
+                ssr_keep = ssr_keep[sort_aux]
+                best_stage1 = best_stage1[sort_aux]
 
         #stage 2 : refine best_stage1 to convergence
-        ssr_best = np.inf
-        for (ssr, start_mask) in best_stage1:
-            if ssr > ssr_keep[n_keep-1]: continue
-            res = self.refine(start_mask, k_accept, max_nrefine=max_nrefine_st2)
-            res_trimmed, ii2, ssr_new, converged = res
-            if not converged:
-                #warning ?
-                print "refine step did not converge, max_nrefine limit reached"
-
-            ssr_current = getattr(res_trimmed, self.target_attr)  #res_trimmed.ssr
-            if ssr_current < ssr_best:
-                ssr_best = ssr_current
-                res_best = (res_trimmed, ii2)
-
+        if two_steps:
+            ssr_best = np.inf
+            for i in range(n_keep):
+                ssr = ssr_keep[i]
+                start_mask = best_stage1[i]
+                if ssr > ssr_keep[n_keep-1]: continue
+                res = self.refine(
+                    start_mask, k_accept, max_nrefine=max_nrefine_st2)
+                res_trimmed, ii2, ssr_new, converged = res
+                if not converged:
+                    #warning ?
+                    print "refine step did not converge, " + \
+                        "max_nrefine limit reached"
+                ssr_current = getattr(
+                    res_trimmed, self.target_attr)  # res_trimmed.ssr
+                if ssr_current < ssr_best:
+                    ssr_best = ssr_current
+                    res_best = (res_trimmed, ii2)
+        else:
+            return (ssr_keep, best_stage1)
         self.temp.best_stage1 = best_stage1
         self.temp.ssr_keep = ssr_keep
 
@@ -419,6 +430,70 @@ class LTS(object):
                 options.update(random_search_options)
             self.options_fit_used = ('exact', options)
             return self.fit_random(k_trimmed, **options)
+
+    def fit_large_sample(self, n_subsamples, max_nstarts=500, k_trimmed=None,
+                         n_keep=10):
+        '''find k_trimmed outliers with a Fast-LTS like algorithm.
+
+        Parameters
+        ----------
+        n_subsamples: int
+            number of splits the initial dataset will be divided into.
+            According to Rousseeuw and Van Driessen's paper [1], splits
+            are of size 300.
+        max_nstarts : int
+            number of random draws of outliers indices used in subsamples at
+            first stage.
+        k_trimmed : int
+            number of observations to trim, i.e. number of outliers that are
+            removed from the data for estimation.
+        n_keep : int
+            number of first stage results to use for the second stage, the
+            concentration or refinement.
+
+        Returns
+        -------
+        res_trimmed : results instance
+            The best, lowest ssr, instance of the estimation results class.
+            Warning: this is just the OLS Results instance with the trimmed
+            set of observations and does not take the trimming into account.
+            TODO: adjust results, especially scale
+        ii2 : ndarray
+            index of inliers, observations used in the best regression.
+
+        Notes
+        -----
+        see fit, fit_random
+
+        [1] P.J. Rousseuw and K. Van Driessen, Computing LTS regression for
+        large data sets, Data Mining and Knowledge Discovery, 2005.
+
+        '''
+        # TODO: version with different levels of pooling
+        # (i.e. n_subsamples would be a list of sizes)
+        nobs, k_vars = self.nobs, self.k_vars
+        if k_trimmed is None:
+            k_trimmed = nobs - int(np.trunc(nobs + k_vars) // 2)
+        # split initial sample
+        sub_size = nobs / n_subsamples
+        subsamples = np.random.permutation(
+            nobs)[:(sub_size * n_subsamples)].reshape((n_subsamples, sub_size))
+        h_sub = int(sub_size * (nobs - k_trimmed) / float(nobs))
+        # run algorithm in subsets
+        best_subsets_candidates = []
+        for sub in subsamples:
+            res = LTS(self.endog[sub], self.exog[sub]).fit_random(
+                k_trimmed=k_trimmed / n_subsamples, n_keep=n_keep,
+                max_nstarts=max_nstarts / n_subsamples, k_start=h_sub,
+                two_steps=False)
+            for c in res[1]:
+                pooled_candidate = np.zeros(nobs, dtype=bool)
+                pooled_candidate[sub[c]] = True
+                best_subsets_candidates.append(pooled_candidate)
+        # pool candidates results to full dataset
+        return self.fit_random(
+            k_trimmed=k_trimmed, iterator=best_subsets_candidates,
+            n_keep=min(n_keep, len(best_subsets_candidates)))
 
 
 from statsmodels.discrete.discrete_model import DiscreteResults

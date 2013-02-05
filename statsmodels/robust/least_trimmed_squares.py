@@ -162,7 +162,7 @@ class LTS(object):
         res_trimmed = self.est_model(endog[iin], exog[iin]).fit()
         self.temp.n_est_calls += 1
         #print np.nonzero(~iin)[0] + 1, res_t_ols.params, res_t_ols.ssr
-        r = endog - res_trimmed.predict(exog)
+        r = np.ravel(endog) - res_trimmed.predict(exog)
         #ii2 = np.argsort(np.argsort(np.abs(r))) < k_accept
         #partial sort would be enough: need only the smallest k_outlier
         #values

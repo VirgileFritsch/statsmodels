@@ -121,3 +121,6 @@ print bestw[0], np.nonzero(bestw[-1])[0] + 1
 
 bestw2 = LTS(endog_wood, exog_wood).fit()
 print bestw2[0], np.nonzero(bestw2[-1])[0] + 1
+# Check that fit_large_sample is equivalent to fit when sample is small
+bestw3 = LTS(endog_wood, exog_wood).fit_large_sample(1)
+print bestw3[0], np.nonzero(bestw3[-1])[0] + 1

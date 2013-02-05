@@ -236,6 +236,7 @@ class HuberScale(object):
                     Gaussian.cdf(self.d)-.5 - self.d/(np.sqrt(2*np.pi))*\
                     np.exp(-.5*self.d**2))
         s = stand_mad(resid)
+
         subset = lambda x: np.less(np.fabs(resid/x),self.d)
         chi = lambda s: subset(s)*(resid/s)**2/2+(1-subset(s))*(self.d**2/2)
         scalehist = [np.inf,s]
@@ -246,8 +247,8 @@ class HuberScale(object):
                     scalehist[-1]**2)
             scalehist.append(nscale)
             niter += 1
-            if niter == self.maxiter:
-                raise ValueError("Huber's scale failed to converge")
+            #if niter == self.maxiter:
+            #    raise ValueError("Huber's scale failed to converge")
         return scalehist[-1]
 
 hubers_scale = HuberScale()
